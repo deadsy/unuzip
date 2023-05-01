@@ -95,6 +95,7 @@ while idx < total_blocks:
     if len(offset_bytes) < 16:
         print("Error: file truncated in TOC")
         exit(1)
+
     (offset, next_offset) = struct.unpack(">QQ", offset_bytes)
     toc_offset = uzip_in.tell() - 8  # next TOC entry
 
@@ -103,24 +104,26 @@ while idx < total_blocks:
         print("Error: invalid TOC entry at %u" % idx)
         exit(1)
 
-    # read and decompress block
-    uzip_in.seek(offset, os.SEEK_SET)
-
-    zlib_data = uzip_in.read(block_compressed_len)
-    if len(zlib_data) != block_compressed_len:
-        print("Error: block data truncated at %u" % idx)
-
-    block_data = zlib.decompress(zlib_data)
-    if (idx != total_blocks - 1) and (len(block_data) != block_size):
-        print("Error: decompression error at %u" % idx)
-        exit(1)
+    if block_compressed_len != 0:
+        # read the compressed block
+        uzip_in.seek(offset, os.SEEK_SET)
+        zlib_data = uzip_in.read(block_compressed_len)
+        if len(zlib_data) != block_compressed_len:
+            print("Error: block data truncated at %u" % idx)
+        # decompress the block
+        block_data = zlib.decompress(zlib_data)
+        if (idx != total_blocks - 1) and (len(block_data) != block_size):
+            print("Error: decompression error at %u" % idx)
+            exit(1)
+    else:
+        # no compressed block -> block_size zeroes
+        block_data = bytearray(block_size)
 
     if args.v:
         print("Block %6u: %u -> %u bytes" % (idx, block_compressed_len, len(block_data)))
 
     # write the decompressed data to the new file
     ufs_out.write(block_data)
-
     idx += 1
 
     # seek back to the TOC
