@@ -87,9 +87,8 @@ print("Total blocks: %10u" % total_blocks)
 print("Total size:   %10u" % total_size)
 print("")
 
-ten_pct = int(total_blocks / 10)
-
 idx = 0
+
 while idx < total_blocks:
     # read the next two block offsets
     offset_bytes = uzip_in.read(16)
@@ -112,14 +111,12 @@ while idx < total_blocks:
         print("Error: block data truncated at %u" % idx)
 
     block_data = zlib.decompress(zlib_data)
-    if len(block_data) != block_size:
+    if (idx != total_blocks - 1) and (len(block_data) != block_size):
         print("Error: decompression error at %u" % idx)
         exit(1)
 
     if args.v:
-        print("Block %6u: compressed size %6u" % (idx, block_compressed_len))
-    elif idx % ten_pct == 0:
-        print("%3d%%" % (idx / ten_pct * 10,))
+        print("Block %6u: %u -> %u bytes" % (idx, block_compressed_len, len(block_data)))
 
     # write the decompressed data to the new file
     ufs_out.write(block_data)
