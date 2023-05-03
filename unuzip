@@ -1,130 +1,185 @@
 #!/usr/bin/env python3
+# ------------------------------------------------------------------------------
+"""
 
-# Copyright (c) 2019 Mike Ryan
-# This code is released under the terms of the MIT license. Refer to
-# COPYING for more details.
+unuzip - Decompress FreeBSD UZIP images
+
+https://github.com/deadsy/unuzip
+
+Copyright (c) 2019 Mike Ryan
+Copyright (c) 2023 Jason Harris
+
+This code is released under the terms of the MIT license. Refer to COPYING for more details.
+
+"""
+# ------------------------------------------------------------------------------
 
 import argparse
 import os
 import struct
 import zlib
+import lzma
+import zstd
 
-MAGIC = "#!/bin/sh"
-FORMAT_V2 = "#V2.0 Format"
-FORMAT_V3 = "#L3.0 Format"
+# ------------------------------------------------------------------------------
+
+
+def fatal(msg):
+    print("Error: %s" % msg)
+    exit(1)
+
+
+# ------------------------------------------------------------------------------
 
 MAGIC_LEN = 128
+MAGIC = "#!/bin/sh"
+FORMAT_V2 = "#V2.0 Format"  # zlib
+FORMAT_V3 = "#L3.0"  # lzma
+FORMAT_V4 = "#Z4.0 Format"  # zstd
+
+fmt_name = {
+    2: "v2(zlib)",
+    3: "v3(lzma)",
+    4: "v4(zstd)",
+}
+
+
+def rd_magic(f):
+    """read the input file magic values"""
+    magic = f.read(MAGIC_LEN).decode("utf-8")
+    if len(magic) != MAGIC_LEN:
+        return None, "file too short"
+    lines = magic.split("\n")
+    if len(lines) < 2 or lines[0] != MAGIC:
+        return None, "unknown file format"
+    if lines[1] == FORMAT_V2:
+        return 2, None
+    if lines[1] == FORMAT_V3:
+        return 3, None
+    if lines[1] == FORMAT_V4:
+        return 4, None
+    return None, "unknown file format"
+
+
+# ------------------------------------------------------------------------------
+
 DEV_BSIZE = 512  # so sayeth FreeBSD
 MAX_BSIZE = 131072
 
-parser = argparse.ArgumentParser(
-    description="Decompress FreeBSD UZIP images",
-    epilog="""
-unuzip was written by Mike Ryan
-For more info and to file bugs, visit: https://github.com/mikeryan/unuzip""",
-    formatter_class=argparse.RawDescriptionHelpFormatter,
-)
-parser.add_argument("infile", help="input file")
-parser.add_argument("outfile", help="output file (default: infile.ufs)", nargs="?")
-parser.add_argument("-v", help="be verbose", action="store_true")
 
-args = parser.parse_args()
+def rd_header(f):
+    """read the input file header"""
+    hdr = f.read(8)
+    if len(hdr) != 8:
+        return None, None, "file too short"
+    block_size, num_blocks = struct.unpack(">II", hdr)
+    if block_size < DEV_BSIZE or block_size > MAX_BSIZE or block_size % DEV_BSIZE != 0:
+        return None, None, "invalid block size (%u)" % block_size
+    return block_size, num_blocks, None
 
-# open input/output files
-output_filename = args.outfile
-if output_filename is None:
-    output_filename = "%s.ufs" % args.infile
 
-try:
-    uzip_in = open(args.infile, "rb")
-except IOError as e:
-    print("Error: can't open input file: %s" % e)
-    exit(1)
+# ------------------------------------------------------------------------------
 
-try:
-    ufs_out = open(output_filename, "wb")
-except IOError as e:
-    print("Error: can't open output file: %s" % e)
-    exit(1)
 
-# load magic, validate
-magic_in = uzip_in.read(MAGIC_LEN).decode("utf-8")
-if len(magic_in) != MAGIC_LEN:
-    print("Error: file too short")
-    exit(1)
+def rd_toc(f, num_blocks):
+    """read the input file table-of-contents"""
+    toc = []
+    for i in range(num_blocks + 1):
+        entry = f.read(8)
+        if len(entry) < 8:
+            return None, "file truncated in toc"
+        toc.append(struct.unpack(">Q", entry)[0])
+    return toc, None
 
-magic_lines = magic_in.split("\n")
-if len(magic_lines) < 2 or magic_lines[0] != MAGIC:
-    print("Error: file is not UZIP")
-    exit(1)
 
-if magic_lines[1] == FORMAT_V3:
-    print("Error: unable to decompress V3 format files")
-    exit(1)
+# ------------------------------------------------------------------------------
 
-if magic_lines[1] == FORMAT_V2:
-    print("UZIP v2.0 file detected")
-else:
-    print("Error: file is not UZIP")
 
-# load header, validate
-header = uzip_in.read(8)
-if len(header) != 8:
-    print("Error: file too short")
-    exit(1)
-block_size, total_blocks = struct.unpack(">II", header)
+def decompress(ofile, ifile, version, toc, num_blocks, block_size):
+    if ifile.tell() != toc[0]:
+        return "input file not at toc[0] position"
+    block = bytearray()
+    for idx in range(num_blocks):
+        n = toc[idx + 1] - toc[idx]
+        if n != 0:
+            data = ifile.read(n)
+            if version == 2:
+                block = zlib.decompress(data)
+            elif version == 3:
+                block = lzma.decompress(data)
+            elif version == 4:
+                block = zstd.decompress(data)
+            else:
+                return "bad version %d" % version
+            if (idx != num_blocks - 1) and (len(block) != block_size):
+                return "decompression error at %u" % idx
+        else:
+            # no compressed block -> block_size zeroes
+            block = bytearray(block_size)
+        ofile.write(block)
 
-if block_size < DEV_BSIZE or block_size > MAX_BSIZE or block_size % DEV_BSIZE != 0:
-    print("Error: invalid block size (%u)" % block_size)
-    exit(1)
+    return None
 
-total_size = block_size * total_blocks
 
-print("Decompressing %s to %s" % (args.infile, output_filename))
-print("")
-print("Block size:   %10u" % block_size)
-print("Total blocks: %10u" % total_blocks)
-print("Total size:   %10u" % total_size)
-print("")
+# ------------------------------------------------------------------------------
 
-idx = 0
 
-while idx < total_blocks:
-    # read the next two block offsets
-    offset_bytes = uzip_in.read(16)
-    if len(offset_bytes) < 16:
-        print("Error: file truncated in TOC")
-        exit(1)
+def main():
+    parser = argparse.ArgumentParser(
+        description="Decompress FreeBSD UZIP/IZO images",
+        epilog="""visit: https://github.com/deadsy/unuzip""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("infile", help="input file")
+    parser.add_argument(
+        "outfile", help="output file (default: <infile>.iso)", nargs="?"
+    )
+    parser.add_argument("-v", help="be verbose", action="store_true")
+    args = parser.parse_args()
 
-    (offset, next_offset) = struct.unpack(">QQ", offset_bytes)
-    toc_offset = uzip_in.tell() - 8  # next TOC entry
+    # open input/output files
+    if args.outfile is None:
+        args.outfile = "%s.iso" % os.path.splitext(args.infile)[0]
 
-    block_compressed_len = next_offset - offset
-    if block_compressed_len < 0 or block_compressed_len > 2 * block_size:
-        print("Error: invalid TOC entry at %u" % idx)
-        exit(1)
+    try:
+        ifile = open(args.infile, "rb")
+    except IOError as e:
+        fatal("can't open input file: %s" % e)
 
-    if block_compressed_len != 0:
-        # read the compressed block
-        uzip_in.seek(offset, os.SEEK_SET)
-        zlib_data = uzip_in.read(block_compressed_len)
-        if len(zlib_data) != block_compressed_len:
-            print("Error: block data truncated at %u" % idx)
-        # decompress the block
-        block_data = zlib.decompress(zlib_data)
-        if (idx != total_blocks - 1) and (len(block_data) != block_size):
-            print("Error: decompression error at %u" % idx)
-            exit(1)
-    else:
-        # no compressed block -> block_size zeroes
-        block_data = bytearray(block_size)
+    try:
+        ofile = open(args.outfile, "wb")
+    except IOError as e:
+        fatal("can't open output file: %s" % e)
+
+    version, err = rd_magic(ifile)
+    if err is not None:
+        fatal(err)
+
+    block_size, num_blocks, err = rd_header(ifile)
+    if err is not None:
+        fatal(err)
+
+    total_size = block_size * num_blocks
 
     if args.v:
-        print("Block %6u: %u -> %u bytes" % (idx, block_compressed_len, len(block_data)))
+        print("%s -> %s" % (args.infile, args.outfile))
+        print("format: %s" % fmt_name[version])
+        print("blocks: %u" % num_blocks)
+        print("block size: %u" % block_size)
+        print("total size: %u" % total_size)
 
-    # write the decompressed data to the new file
-    ufs_out.write(block_data)
-    idx += 1
+    toc, err = rd_toc(ifile, num_blocks)
+    if err is not None:
+        fatal(err)
 
-    # seek back to the TOC
-    uzip_in.seek(toc_offset, os.SEEK_SET)
+    err = decompress(ofile, ifile, version, toc, num_blocks, block_size)
+    if err is not None:
+        fatal(err)
+
+    ifile.close()
+    ofile.close()
+
+
+main()
+
+# ------------------------------------------------------------------------------
