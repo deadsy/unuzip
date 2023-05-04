@@ -4,8 +4,9 @@ UZIP is a compressed image format created by `mkuzip` on FreeBSD.
 
 See: https://github.com/deadsy/mkuzip
 
-Typically `mkuzip` is used to compress ISO file system images.
-`unuzip` decompresses these files to the original ISO file that can be mounted.
+`mkuzip` is generally used to compress ISO file system images.
+
+`unuzip` decompresses these files to return to the original ISO file.
 
 `unuzip` is written in Python 3 and has been tested on Linux and Mac OS X.
 
@@ -25,13 +26,13 @@ Typically `mkuzip` is used to compress ISO file system images.
 
     visit: https://github.com/deadsy/unuzip
 
-If no output file is given, the output filename defaults to `inputfile.iso`.
+If no output file is given, the output filename defaults to `<infile>.iso`.
 
 Note: `unuzip` will silently overwrite a pre-existing output file.
 
 Once the file is decompressed, you can mount it on a Linux system using a command like:
 
-    mount -o loop file.iso /mnt/somewhere
+    sudo mount -o loop file.iso /mnt/somewhere
 
 # UZIP file format
 
@@ -40,11 +41,12 @@ benefit of others interested in this format, this section is a brief
 overview of how the file is structured. All integers are big endian.
 
     Magic:  128 bytes (shell script)
-    Header: 8 bytes (uint32_t block_size, uint32_t total_blocks)
+    Header: 8 bytes (uint32_t block_size, uint32_t num_blocks)
     TOC:    8 bytes * (num_blocks + 1)
     Compressed blocks
 
 UZIP magic is a 128 byte string that also makes the file a valid shell script that will mount the image on FreeBSD.
+
 For version 2 images, the magic string is:
 
     #!/bin/sh
@@ -56,14 +58,14 @@ For version 2 images, the magic string is:
 The header declares the block size (size of decompressed blocks) and total number of blocks.
 Block size must be a multiple of 512 and defaults to 16384 in `mkuzip`.
 
-The TOC is a list of `uint64_t` offsets into the file for each block.
-To determine the length of a given block, read the next TOC entry and subtract the current offset from the next offset (this is why there is
-an extra TOC entry at the end).
-Each block is compressed using compression specific to the input file version.
-The decompressor will decompress them to a block of size `block_size`.
+The TOC is a list of 64 bit unsigned offsets into the file for each block.
+ * The length of a compressed data block is determined by subtracting consecutive offsets.
+ * Each block is compressed using a compression method specific to the input file version.
+ * The compressed data block is decompressed to `block_size` bytes (the last block may be smaller).
+ * A compressed data block with 0 length generates `block_size` zero bytes in the uncompressed output.
 
-# About
+# About `unuzip`
 
-`unuzip` was written by Mike Ryan of [ICE9 Consulting](https://ice9.us).
-`unzip` was updated by Jason Harris to support python 3 and to add support for UZIP versions 3 and 4.
-`unuzip` is not part of FreeBSD and shares no code with FreeBSD.
+ * Originally written by Mike Ryan of [ICE9 Consulting](https://ice9.us).
+ * Updated by Jason Harris to support python 3 and add support for UZIP versions 3 and 4.
+ * Not part of FreeBSD and shares no code with FreeBSD.
