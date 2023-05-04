@@ -112,7 +112,7 @@ def decompress(ofile, ifile, version, toc, num_blocks, block_size):
             else:
                 return "bad version %d" % version
             if (idx != num_blocks - 1) and (len(block) != block_size):
-                return "decompression error at %u" % idx
+                return "decompression error for block %u" % idx
         else:
             # no compressed block -> block_size zeroes
             block = bytearray(block_size)
@@ -159,14 +159,12 @@ def main():
     if err is not None:
         fatal(err)
 
-    total_size = block_size * num_blocks
-
     if args.v:
         print("%s -> %s" % (args.infile, args.outfile))
         print("format: %s" % fmt_name[version])
         print("blocks: %u" % num_blocks)
         print("block size: %u" % block_size)
-        print("total size: %u" % total_size)
+        print("total size: %u" % (block_size * num_blocks))
 
     toc, err = rd_toc(ifile, num_blocks)
     if err is not None:

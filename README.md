@@ -10,6 +10,10 @@ See: https://github.com/deadsy/mkuzip
 
 `unuzip` is written in Python 3 and has been tested on Linux and Mac OS X.
 
+## Dependencies
+
+    pip install zstd
+
 ## Usage
 
     usage: unuzip [-h] [-v] infile [outfile]
